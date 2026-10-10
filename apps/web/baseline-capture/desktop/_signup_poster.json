@@ -1,0 +1,68 @@
+[
+  {
+    "i": 0,
+    "tag": "A",
+    "id": "",
+    "tid": null,
+    "text": "BBounty Board",
+    "x": 24,
+    "y": 16,
+    "w": 169,
+    "h": 32
+  },
+  {
+    "i": 1,
+    "tag": "A",
+    "id": "",
+    "tid": null,
+    "text": "Log In",
+    "x": 1282,
+    "y": 23,
+    "w": 40,
+    "h": 19
+  },
+  {
+    "i": 2,
+    "tag": "A",
+    "id": "",
+    "tid": null,
+    "text": "Sign Up",
+    "x": 1334,
+    "y": 15,
+    "w": 82,
+    "h": 35
+  },
+  {
+    "i": 3,
+    "tag": "H1",
+    "id": "",
+    "tid": null,
+    "text": "Become a Poster",
+    "x": 561,
+    "y": 384,
+    "w": 318,
+    "h": 32
+  },
+  {
+    "i": 4,
+    "tag": "INPUT",
+    "id": "",
+    "tid": null,
+    "text": "",
+    "x": 561,
+    "y": 468,
+    "w": 318,
+    "h": 42
+  },
+  {
+    "i": 5,
+    "tag": "BUTTON",
+    "id": "",
+    "tid": null,
+    "text": "Connect & Signup",
+    "x": 561,
+    "y": 534,
+    "w": 318,
+    "h": 48
+  }
+]

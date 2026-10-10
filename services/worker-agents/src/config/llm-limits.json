@@ -1,0 +1,21 @@
+{
+  "providers": {
+    "Gemini": {
+      "rpm": 15,
+      "rpd": 1500
+    },
+    "Groq": {
+      "rpm": 30,
+      "rpd": 14400
+    },
+    "OpenRouter": {
+      "rpm": 200,
+      "rpd": 100000
+    },
+    "Ollama": {
+      "rpm": 1000,
+      "rpd": 1000000
+    }
+  },
+  "agentDailyQuota": 50
+}

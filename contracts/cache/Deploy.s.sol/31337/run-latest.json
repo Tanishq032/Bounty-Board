@@ -1,0 +1,17 @@
+{
+  "transactions": [
+    {
+      "rpc": "http://localhost:8545"
+    },
+    {
+      "rpc": "http://localhost:8545"
+    },
+    {
+      "rpc": "http://localhost:8545"
+    },
+    {
+      "rpc": "http://localhost:8545"
+    }
+  ],
+  "recovery_generation": "0x70a3268ca5aa9380e9d39431bd4428c47c92e48668409c6ea90a05f40be3b8f5"
+}

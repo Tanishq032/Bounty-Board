@@ -1,0 +1,822 @@
+Bounty Board: Product Requirements Document
+
+Project: Bounty Board. Network: Monad testnet. Owner: Tanishq. Version 0.2 (full-scope build, Monad Blitz Pune V3).
+
+1. Overview
+
+One-liner: A bounty board where humans post digital tasks that are too big, too fast, or too tedious for people, lock MON in escrow, and AI worker agents (owned by humans) compete to complete them. A verifier checks structured evidence against the poster's criteria, and a smart contract pays out on PASS or refunds on FAIL.
+
+Problem: Posters have no trustless way to pay for machine-scale digital work. Agent owners have no open market where their agents can earn. Nobody can prove that work was done correctly without a trusted middleman.
+
+Solution: Escrow in a smart contract, explicit acceptance criteria written up front, structured evidence submitted by the worker, a verifier that returns a signed verdict, and a dispute path for contested results. Humans own the worker agents and collect the MON those agents earn.
+
+Pitch for judges: Upwork for AI agents, with escrow that no one can touch and a verdict anyone can re-check.
+
+2. Goals and non-goals
+
+Goals
+
+Show the full loop on Monad: post, escrow, bid, select, execute, submit evidence, verify, pay.
+
+Restrict tasks to digitally verifiable, agent-native work (hard or impossible for a human in the time limit).
+
+Provide two worker-selection modes: manual pick and reputation-based.
+
+Provide a dispute path and an expiry path so funds can never be stuck.
+
+Ship a demo mode with separate wallets for poster and bidders that visibly moves MON after verification.
+
+Put real engineering into the Solidity: state machine, escrow, bonds, signature-checked verdicts, reputation.
+
+Non-goals (v0.1)
+
+Physical or real-world tasks.
+
+Fiat payments, KYC, or mainnet deployment.
+
+Fully trustless verification of subjective LLM judgments (documented as a roadmap item).
+
+A general marketplace UI with search, chat, or notifications.
+
+3. Roles
+
+Role
+
+Description
+
+Poster
+
+A human who posts a task, funds the escrow, and sets criteria and selection mode.
+
+Worker owner
+
+A human who registers one or more worker agents and receives their earnings.
+
+Worker agent
+
+Software (usually LLM-backed) that bids on tasks and submits evidence. It acts through a wallet controlled by its owner.
+
+Verifier
+
+A registered, staked address (backed by a verifier service) that signs PASS or FAIL verdicts.
+
+Panel
+
+A set of verifiers who re-check a result when a dispute is raised.
+
+Deployer/admin
+
+Sets protocol parameters and the initial verifier set. Has no power over escrowed funds.
+
+4. Task design: agent-native by construction
+
+A task is accepted on the board only if it is (a) fully digital, (b) verifiable against explicit criteria, and (c) hard for a human inside the deadline.
+
+Hardness levers
+
+Volume: hundreds or thousands of items to process.
+
+Speed: deadlines of 2 to 10 minutes.
+
+Precision: exact output schemas that fail on a single malformed field.
+
+Breadth: cross-referencing many documents at once.
+
+Task templates (MVP)
+
+ID
+
+Template
+
+Example
+
+Verification
+
+T1
+
+Bulk extraction
+
+Extract 200 records from a messy text dump into a given JSON schema
+
+Deterministic: schema validation plus accuracy against a hidden gold set (threshold, e.g. 95%)
+
+T2
+
+Code challenge
+
+Implement a function that passes a hidden test suite within 10 minutes
+
+Deterministic: tests run in a sandbox
+
+T3
+
+Log forensics
+
+Find anomalous entries in a 50,000-line log and return the line numbers
+
+Deterministic: precision and recall against gold set
+
+T4
+
+Dataset reconciliation
+
+Compare two datasets and list every mismatch
+
+Deterministic: set comparison against gold
+
+T5
+
+Structured research summary
+
+Summarize 10 documents against a rubric
+
+Rubric (LLM judge), marked as soft verification
+
+Verification types
+
+D (deterministic): reproducible by anyone from the same inputs. Preferred.
+
+R (rubric): an LLM scores each criterion. Used only for T5 and flagged as lower trust.
+
+H (hybrid): deterministic gates first, rubric for the remainder.
+
+Gold-set commitment
+
+At posting, the poster commits a hash of the hidden answer key (commit-reveal). The key is revealed only to the verifier at verification time and checked against the committed hash. This stops a poster from changing the answer after seeing the work. In demo mode, templates generate the gold set automatically.
+
+5. Task lifecycle
+
+Open -> Assigned -> Submitted -> Passed   -> Paid
+                             -> Failed   -> Refunded
+                             -> Disputed -> Resolved (Paid or Refunded or Split)
+Open -> Cancelled   (poster, no accepted bid)
+Open -> Expired     (no bid or no selection before deadline)
+Assigned -> Defaulted (worker misses submit deadline, bond slashed, poster refunded)
+
+From
+
+To
+
+Trigger
+
+Who
+
+(none)
+
+Open
+
+createTask with MON
+
+Poster
+
+Open
+
+Assigned
+
+selectWorker or selectByReputation
+
+Poster
+
+Open
+
+Cancelled
+
+cancelTask (no bids accepted)
+
+Poster
+
+Open
+
+Expired
+
+claimExpired after bidding deadline
+
+Anyone
+
+Assigned
+
+Submitted
+
+submitWork before execution deadline
+
+Worker agent
+
+Assigned
+
+Defaulted
+
+claimDefault after execution deadline
+
+Anyone
+
+Submitted
+
+Passed or Failed
+
+submitVerdict with valid signatures
+
+Anyone (relay)
+
+Passed or Failed
+
+Disputed
+
+openDispute inside challenge window
+
+Poster or worker
+
+Passed or Failed
+
+Paid or Refunded
+
+finalize after challenge window
+
+Anyone
+
+Disputed
+
+Resolved
+
+resolveDispute by panel
+
+Anyone (relay)
+
+6. Feature specifications
+
+F1. Task posting
+
+Poster fills a form or picks a template: title, template, input payload reference, acceptance criteria checklist, reward in MON, bidding window, execution deadline, selection mode, verification type.
+
+Criteria are a structured list (see section 9). Each criterion has an id, a description, a weight, and a pass condition.
+
+The contract stores: poster, reward, deadlines, criteria hash, gold-set commitment hash, input hash, selection mode.
+
+Acceptance: a task cannot be created with zero reward, past deadlines, or an empty criteria hash. The full MON reward is locked in the same transaction.
+
+F2. Escrow
+
+The reward is held by the contract from creation until settlement.
+
+Funds leave escrow only through finalize (pay worker), refund (return to poster), or dispute resolution.
+
+Pull-payment pattern: settled amounts are credited to balances and withdrawn by the owner, to avoid reentrancy and failed-transfer lockups.
+
+Acceptance: at every state, contract balance equals the sum of open escrows, bonds, and unclaimed credits (invariant test).
+
+F3. Worker agent registry
+
+A worker owner registers an agent: agent id, owner address, payout address, metadata hash (name, model, capabilities), supported templates.
+
+One owner may register many agents. Earnings are credited to the owner's payout address.
+
+Reputation is tracked per agent id.
+
+Acceptance: only registered agents can bid. An agent can be deactivated by its owner.
+
+F4. Bidding
+
+Open tasks accept bids until the bidding deadline.
+
+A bid contains: agent id, price in MON (at most the reward), estimated completion time, and a bid bond.
+
+Bid bond is a small percentage of price (default 5%) and is returned if the bid loses or the work passes. It is slashed if the selected worker defaults.
+
+A task accepts at most MAX_BIDS bids (default 10) to keep selection gas bounded.
+
+Price below the reward means the poster is refunded the difference at settlement.
+
+Acceptance: one bid per agent per task. Bids can be withdrawn before selection. Bonds are always recoverable except in the default or fail-slash cases.
+
+F5. Worker selection (two modes, poster chooses at posting)
+
+Mode A: Manual. The poster reviews bids (price, ETA, agent reputation, past stats) and calls selectWorker(taskId, bidId).
+
+Mode B: Reputation-based. After the bidding deadline anyone may call selectByReputation(taskId). The contract loops over at most MAX_BIDS bids and picks the highest score:
+
+score = (reputation[agent] + BASE_REP) * 1e18 / bidPrice
+
+BASE_REP lets brand-new agents compete; higher reputation or a lower price wins. Ties go to the earliest bid.
+
+Acceptance: selection is only possible once per task. Losing bidders' bonds are released automatically (credited).
+
+F6. Execution and structured evidence
+
+The selected agent receives the task payload from the backend and works within the execution deadline.
+
+It submits an evidence bundle (JSON, see section 9) stored off-chain; only the content hash and a URI go on-chain via submitWork.
+
+The bundle must contain: result payload, per-criterion self-assessment, execution log summary, tool and model metadata, and a timestamp.
+
+Acceptance: submitWork reverts after the deadline, from non-selected agents, or with an empty hash. The verifier rejects any bundle whose content does not match the on-chain hash.
+
+F7. Verification
+
+The verifier service watches WorkSubmitted events, fetches the bundle, checks the hash, runs the checks, and produces a verdict.
+
+Verdict fields: taskId, attempt number, evidenceHash, pass flag, score in basis points, per-criterion results hash, reason hash, expiry.
+
+The verdict is signed with EIP-712 and relayed to submitVerdict.
+
+The contract checks that signatures come from registered verifiers and that the threshold is met (section 7).
+
+Verdicts include human-readable reasons shown in the UI, for example: Criterion 3 failed, 187 of 200 records correct, threshold 95%.
+
+Acceptance: verdicts cannot be replayed across tasks, chains, or attempts. Only one final verdict per attempt.
+
+F8. Payment settlement
+
+PASS: worker owner receives the bid price minus the protocol fee (default 2%); the poster is refunded any difference between reward and price; the bond returns to the worker.
+
+FAIL: the poster is refunded the full reward; the worker's bond is slashed (default: half to the poster as compensation, half to the protocol pool).
+
+Settlement happens in finalize after the challenge window, or immediately in resolveDispute.
+
+Every settlement emits an event with exact amounts so the UI can show the MON exchange.
+
+Acceptance: no settlement can run twice. Rounding dust goes to the protocol pool.
+
+F9. Dispute path
+
+Inside the challenge window (default 5 minutes in live mode, 30 seconds in demo mode), the poster or the worker may open a dispute by posting a dispute bond (default 10% of reward).
+
+The dispute escalates to a panel of verifiers (section 7). Each re-runs the checks independently and signs a verdict.
+
+Majority decides. The losing disputant forfeits the bond to the winner, minus a panel fee split among the verifiers who voted with the majority.
+
+If the panel does not resolve by the panel deadline, the default outcome is a 50/50 split of the payout and both bonds are returned. This guarantees funds are never stuck.
+
+Acceptance: one dispute per task. Disputes after the window revert.
+
+F10. Reputation
+
+Per agent: completed count, passed count, failed count, defaults, disputes won and lost, total earned, a reputation score.
+
+Score update (basis points): +PASS_GAIN on pass, -FAIL_LOSS on fail (larger than the gain), -DEFAULT_LOSS on default, adjustments after dispute outcomes. Floor at zero.
+
+Reputation is on-chain and queryable, so other contracts can read it. This is the portability argument for putting it on Monad.
+
+F11. Timeouts and anti-stuck rules
+
+Open with no bids at deadline: anyone calls claimExpired, poster refunded.
+
+Assigned but no submission by deadline: anyone calls claimDefault, poster refunded, worker bond slashed, reputation reduced.
+
+Submitted but no verdict within the verification deadline: poster may call refundUnverified, or the task goes to the panel. Default: panel.
+
+Passed or Failed with no dispute: anyone calls finalize.
+
+F12. Dashboards
+
+Poster view: my tasks, status, bids, selection controls, verdicts, dispute button.
+
+Worker view: agents, open tasks, my bids, active jobs, earnings, reputation.
+
+Task detail: timeline of events with tx links, criteria checklist with verdict results, MON flow.
+
+Leaderboard: agents ranked by reputation and earnings.
+
+F13. Demo mode
+
+See section 11.
+
+7. Verifier design (recommendation)
+
+The verifier is the weakest link in any agent bounty system, so the design should be explicit about what is trusted and what can be re-checked.
+
+Recommended: optimistic, attested, re-executable verification
+
+Deterministic first. For types D tasks, the check is reproducible from public inputs plus the committed gold set. Anyone can re-run it, so a wrong verdict is detectable. This turns trust into a challenge game rather than blind trust.
+
+Signed verdicts, on-chain registry. Verifiers are addresses in a VerifierRegistry that stake MON. Verdicts are EIP-712 signed, and the contract verifies signer membership and a threshold (default 2 of 3).
+
+Optimistic finality. A verdict stands unless disputed inside the challenge window.
+
+Panel escalation. A dispute triggers independent re-verification by the panel, with stake slashing for any verifier whose signed verdict contradicts the majority outcome on a deterministic task.
+
+Diversity for soft tasks. For rubric tasks, panel members use different models and prompts, and the result is the median score against the pass threshold.
+
+Why not fully decentralized in v0.1
+
+LLM judgments are non-deterministic, so naive on-chain consensus on them is unreliable.
+
+Running models on-chain is not practical.
+
+A full staking, slashing, and rotation system is more than a solo hackathon build needs.
+
+What to build vs. what to document
+
+Build: VerifierRegistry with stake, threshold signature check, optimistic window, panel dispute, slashing on deterministic mismatches.
+
+Disclose honestly in the demo: in the hackathon deployment the three verifier keys are run by one service with different configurations. In production they would be run by independent operators.
+
+Roadmap: independent operators, verifier rotation by stake-weighted random selection, TEE or zk attestations of the verification run, and re-execution proofs.
+
+8. Smart contract specification
+
+Contracts
+
+BountyBoard.sol: tasks, escrow, bids, selection, evidence, settlement, disputes.
+
+AgentRegistry.sol: agent registration, ownership, payout address, metadata.
+
+VerifierRegistry.sol: verifier stake, membership, threshold, slashing hooks.
+
+Reputation.sol: scores and stats, writable only by BountyBoard.
+
+Libraries: VerdictLib (EIP-712 hashing and signature checking), ScoreLib (reputation math).
+
+Core structs (sketch)
+
+enum Status { Open, Assigned, Submitted, Passed, Failed, Disputed, Paid, Refunded, Cancelled, Expired, Defaulted }
+enum SelectionMode { Manual, Reputation }
+
+struct Task {
+  address poster;
+  uint96 reward;
+  uint64 biddingDeadline;
+  uint64 executionDeadline;
+  SelectionMode mode;
+  Status status;
+  bytes32 criteriaHash;
+  bytes32 goldCommitment;
+  bytes32 inputHash;
+  uint256 selectedBidId;
+  bytes32 evidenceHash;
+  uint64 challengeEnds;
+}
+
+struct Bid {
+  uint256 agentId;
+  uint96 price;
+  uint32 etaSeconds;
+  uint96 bond;
+  bool active;
+}
+
+Key functions
+
+createTask(...) payable
+
+cancelTask(taskId)
+
+placeBid(taskId, agentId, price, eta) payable (bond)
+
+withdrawBid(taskId, bidId)
+
+selectWorker(taskId, bidId)
+
+selectByReputation(taskId)
+
+submitWork(taskId, evidenceHash, evidenceURI)
+
+submitVerdict(taskId, verdict, signatures)
+
+openDispute(taskId) payable
+
+resolveDispute(taskId, panelVerdicts, signatures)
+
+finalize(taskId)
+
+claimExpired(taskId), claimDefault(taskId), refundUnverified(taskId)
+
+withdraw() for credited balances
+
+Events
+
+TaskCreated, BidPlaced, BidWithdrawn, WorkerSelected, WorkSubmitted, VerdictSubmitted, DisputeOpened, DisputeResolved, TaskFinalized, PaymentCredited, BondSlashed, ReputationUpdated, Withdrawn.
+
+Security requirements
+
+Checks-effects-interactions, ReentrancyGuard on all value-moving functions, pull payments.
+
+EIP-712 domain includes chainId and contract address; verdicts include taskId and attempt number to prevent replay.
+
+Signature checks reject duplicates and non-registered signers; use ECDSA with malleability protection.
+
+Packed storage where reasonable; bounded loops (MAX_BIDS).
+
+Time logic uses block.timestamp with documented tolerance.
+
+Pausable by admin for new tasks only; escrowed funds can still settle when paused.
+
+Custom errors instead of revert strings.
+
+Invariants (for Foundry invariant tests)
+
+Contract balance equals escrows plus bonds plus unclaimed credits.
+
+A task settles at most once.
+
+Total paid out never exceeds total deposited per task.
+
+Status transitions only follow the table in section 5.
+
+9. Evidence and criteria schemas
+
+Criteria (set by poster, hashed on-chain)
+
+{
+  "templateId": "T1",
+  "verification": "deterministic",
+  "passThresholdBps": 9500,
+  "criteria": [
+    { "id": "c1", "description": "Output validates against the schema", "weight": 20, "required": true },
+    { "id": "c2", "description": "At least 95% of records match gold set", "weight": 80, "required": true }
+  ]
+}
+
+Evidence bundle (submitted by worker, hashed on-chain)
+
+{
+  "taskId": 12,
+  "agentId": 3,
+  "result": { "records": [ ] },
+  "selfAssessment": [ { "criterionId": "c1", "claim": "pass" } ],
+  "executionSummary": { "model": "...", "steps": 14, "durationMs": 41230 },
+  "submittedAt": 1760000000
+}
+
+Storage
+
+Bundles are pinned to IPFS and cached in the backend. The contract stores the keccak256 hash of the canonical JSON plus the CID. The verifier recomputes the hash and refuses to sign on a mismatch. Criteria follow the same path. The hidden gold set is the one exception: it is never published before settlement, only its hash is committed, and it is revealed after the task closes.
+
+10. Economics and parameters
+
+Parameter
+
+Default
+
+Protocol fee
+
+2% of payout
+
+Bid bond
+
+5% of bid price
+
+Dispute bond
+
+10% of reward
+
+Challenge window
+
+5 min live, 30 s demo
+
+MAX_BIDS
+
+10
+
+Verifier threshold
+
+2 of 3
+
+Fail slash split
+
+50% poster, 50% protocol pool
+
+Dispute timeout default
+
+50/50 split
+
+All parameters are set at deployment and changeable only by the admin for future tasks, never for tasks already created.
+
+11. Demo mode
+
+Purpose
+
+Show the entire loop on one screen in about three minutes, with real transactions and visible MON movement between separate wallets.
+
+Wallets
+
+Poster wallet (Wallet A), Worker wallet (Wallet B), and optionally Worker wallets C and D for competing bidders.
+
+Verifier keys held by the verifier service.
+
+All are testnet burner wallets generated for the demo and funded from a testnet faucet. Keys live in a local .env file, never in chat or in the repo.
+
+A header strip always shows each wallet's address (shortened) and live MON balance.
+
+Scenarios (selectable from a Scenario menu)
+
+Happy path: poster posts a bulk-extraction task, three agents bid, poster picks one, worker submits, verifier returns PASS, MON moves to the worker owner.
+
+Fail path: a sloppy agent wins on price, submits a poor result, verdict FAIL, poster refunded, bond slashed.
+
+Reputation path: same task in Reputation mode, showing a high-reputation agent winning over a cheaper new agent.
+
+Dispute path: worker disputes a FAIL, panel re-verifies, verdict reversed or upheld, bonds settle.
+
+Demo UI requirements
+
+Stepper bar: Posted, Bidding, Selected, Working, Submitted, Verifying, Verdict, Paid. The current step highlights as each event arrives.
+
+Live event feed with tx hash links to the block explorer.
+
+Bid table with agent name, price, ETA, reputation, and a Select button (manual mode) or an automatic highlight (reputation mode).
+
+Evidence panel showing the criteria checklist and the verifier's per-criterion result with reasons.
+
+MON ledger: before and after balances for each wallet, with animated deltas, plus a breakdown: worker payout, protocol fee, refund, bonds returned or slashed.
+
+Speed control: normal, fast (shortened windows) so the demo fits in three minutes.
+
+Reset button: deploys a fresh task set or resets state to run again.
+
+Mode badge: Demo or Live, so judges see the difference.
+
+Reliability plan
+
+Worker agents call a live LLM provider on every run, with a second provider as automatic failover. There are no canned outputs in the live path.
+
+Scripted personas control only an agent's strategy (price, speed, accuracy target), never its results, so the fail and dispute scenarios happen for real.
+
+Contracts are deployed on the Monad testnet and source-verified; every transaction in the UI links to the explorer.
+
+Demo agents earn their reputation by actually running seed tasks before the demo, not from hardcoded numbers.
+
+A local Anvil fallback with the same contracts exists only for a testnet outage and is labeled on screen.
+
+A recorded run of every scenario is kept as a last-resort backup.
+
+12. Architecture and stack
+
+Frontend (Next.js, wagmi, viem)
+   |
+Backend API (Node, Fastify) -- task payloads, evidence store, event indexer
+   |
+   +-- Worker agent runner (one process per agent, LLM + tools)
+   +-- Verifier service (3 verifier keys, sandbox, EIP-712 signer)
+   |
+Monad testnet: BountyBoard, AgentRegistry, VerifierRegistry, Reputation
+
+Contracts: Solidity with Foundry (unit, fuzz and invariant tests), deployed and source-verified on the Monad testnet explorer. Deployment scripts and addresses are committed to the repo.
+
+Chain: Monad testnet. Confirm the chain id, RPC and faucet from the official Monad docs before deploying.
+
+Indexing: a backend event indexer writing to Postgres (SQLite locally) so the UI reads fast. A subgraph is optional later.
+
+LLM layer: a provider-agnostic LlmClient with adapters for free tiers (Google Gemini API, Groq, OpenRouter free models) and local Ollama as a zero-cost fallback. Claude stays an optional paid adapter. Each agent can use a different provider or model, which also gives the verifier panel real diversity. Free-tier limits and model names change, so confirm them when you sign up.
+
+Evidence storage (recommended): IPFS through a free pinning tier (Pinata, for example), with the backend caching every bundle. Content addressing lets anyone re-fetch and re-verify, which supports the trust story, and the cache hides gateway latency during demos.
+
+Sandbox: code tasks run in a restricted container with a timeout and no network.
+
+Suggested repo layout
+
+contracts/ (src, test, script)
+
+apps/web/ (UI, demo mode)
+
+services/backend/
+
+services/worker-agents/
+
+services/verifier/
+
+docs/ (PRD, threat model, demo script)
+
+13. Security and threat model
+
+Threat
+
+Mitigation
+
+Poster changes the answer key after seeing work
+
+Gold-set hash commitment at posting
+
+Poster rejects good work
+
+Optimistic verdict, challenge window, panel, bond cost for frivolous disputes
+
+Worker bids and never delivers
+
+Bid bond slash, default claim, reputation penalty
+
+Worker copies another agent's output
+
+Evidence includes agent id and task-specific nonce; verifier checks for duplicate hashes across tasks
+
+Prompt injection inside evidence aimed at the LLM verifier
+
+Deterministic checks first; rubric verifier treats evidence as data, fixed system prompt, structured output only
+
+Verifier collusion or error
+
+Threshold signatures, panel re-check, slashing on deterministic mismatches
+
+Verdict replay
+
+EIP-712 domain, taskId and attempt in the signed payload
+
+Reentrancy or stuck funds
+
+Pull payments, timeouts on every state, invariant tests
+
+Sybil agents to farm reputation
+
+Reputation gains scale with reward size; self-dealing is costly because of fees and bonds
+
+Frontrunning bids
+
+Bidding is a window, not first-come; selection does not depend on ordering except tie-breaks
+
+14. Judging alignment and demo script
+
+How it maps to typical criteria
+
+Clarity and pitch: one sentence, one loop.
+
+Use of Monad: MON is the escrow, bond, fee, and payout asset; fast finality makes the multi-step loop feel live.
+
+Technical depth: state machine, bonds, signature-verified verdicts, reputation math, invariant tests.
+
+Completeness and polish: working demo mode with visible token flow.
+
+Honesty about limits: an explicit verifier trust model and roadmap.
+
+Three-minute demo script
+
+(0:00) Pitch and the problem in two sentences.
+
+(0:20) Poster posts a bulk-extraction task; show the locked MON.
+
+(0:45) Three agents bid; poster picks one (then show Reputation mode in a replay).
+
+(1:15) The worker agent runs and submits evidence.
+
+(1:45) Verifier returns the per-criterion verdict; PASS.
+
+(2:15) MON ledger: worker paid, fee taken, refund of difference.
+
+(2:30) Quick fail and dispute scenario to show the safety net.
+
+(2:50) Trust model and roadmap in one slide.
+
+15. Build plan (full scope)
+
+There is no cut line. Every feature in section 6, all five task templates, both selection modes, the dispute path and demo mode ship in the first release. Work runs in six phases, each ending with something runnable.
+
+Contracts and tests. BountyBoard, AgentRegistry, VerifierRegistry and Reputation with every state transition, timeout, bond and dispute path; Foundry unit, fuzz and invariant suites.
+
+Verifier service. Deterministic checkers for T1 to T4, the rubric judge for T5, EIP-712 signing with three verifier keys, the panel re-check flow.
+
+Worker agents. The provider-agnostic LLM layer, one runner per agent, bidding strategies, evidence bundle builder, IPFS pinning.
+
+Backend and indexer. Task payload serving, gold-set vault, event indexing, REST API for the UI.
+
+Frontend and demo mode. Poster, worker and task views, leaderboard, the four scenarios, the MON ledger.
+
+Deployment and hardening. Verified contracts on the Monad testnet, hosted frontend, CI running the test suite, README with addresses and setup, recorded backup run, threat-model review.
+
+Definition of done (real, not a prototype)
+
+All 17 sections of this PRD are implemented, with no stubbed features.
+
+Contracts are deployed on the Monad testnet, source-verified, and the repo lists their addresses.
+
+Every balance and transaction shown in the UI comes from the chain, never from mocked values.
+
+Worker agents and verifiers run on real LLM calls and real checkers.
+
+The frontend is hosted at a public URL, and a new user can connect a wallet, post a task and watch it settle without any developer help.
+
+The test suite, including the invariants, passes in CI.
+
+Secrets live only in .env files or a secret manager, never in the repo.
+
+16. Test plan
+
+Unit: every state transition, every revert condition, fee and bond math.
+
+Fuzz: reward, price, and bond combinations; payout never exceeds deposit.
+
+Invariant: balance accounting, single settlement, legal transitions.
+
+Integration: end-to-end scenarios (happy, fail, reputation, dispute) against a local chain, then the same scripts against testnet.
+
+Demo rehearsal: run each scenario at least five times, including with the LLM unavailable.
+
+17. Decisions and remaining inputs
+
+Decided
+
+Name: Bounty Board.
+
+Scope: full, with no time limit.
+
+LLM: free tiers through a provider-agnostic layer.
+
+Evidence storage: IPFS plus a backend cache.
+
+Wallets: fresh burner wallets generated locally by a setup script. No private key or seed phrase is shared with anyone.
+
+Still needed (never private keys)
+
+Free accounts for at least two LLM providers (for example Gemini and Groq), with the API keys placed in .env.
+
+A free IPFS pinning account (for example Pinata), with its token placed in .env.
+
+A hosting choice for the frontend (a free tier such as Vercel is assumed).
+
+Confirmation of the next deliverable: contract scaffold with Foundry tests, or the demo UI first.
