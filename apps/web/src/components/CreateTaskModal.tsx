@@ -103,7 +103,7 @@ export function CreateTaskModal({ isOpen, onClose, onSubmit }: CreateTaskModalPr
           inputHashBytes32
         ],
         value: parsedReward,
-        gas: 300000n,
+        gas: BigInt(300000),
         account,
       });
 
